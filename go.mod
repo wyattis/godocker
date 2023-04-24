@@ -1,4 +1,4 @@
-module godocker
+module github.com/wyattis/godocker
 
 go 1.19
 
