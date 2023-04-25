@@ -1,4 +1,4 @@
-package main
+package godocker
 
 import (
 	"bufio"
@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/docker/docker/api/types"
@@ -19,9 +20,9 @@ import (
 	"github.com/wyattis/z/zrand"
 )
 
-type Opt = func(config DockerConfig) DockerConfig
+type Opt = func(config Config) Config
 
-type DockerConfig struct {
+type Config struct {
 	Name            string
 	Cwd             string
 	Host            *container.HostConfig
@@ -33,50 +34,61 @@ type DockerConfig struct {
 	Ctx             context.Context
 	ClientOpts      []client.Opt
 
-	Cli          *client.Client
-	Container    *container.CreateResponse
-	ImageTags    []string
-	execRunners  []func(config DockerConfig) (err error)
-	afterRunners []func(config DockerConfig) (err error)
+	Cli       *client.Client
+	Container *container.CreateResponse
+	ImageTags []string
+
+	// internal
+	usingAPIVersion bool
+	execRunners     []func(config Config) (err error)
+	afterRunners    []func(config Config) (err error)
 }
 
 func WithClientOpts(opts ...client.Opt) Opt {
-	return func(config DockerConfig) DockerConfig {
+	return func(config Config) Config {
 		config.ClientOpts = append(config.ClientOpts, opts...)
 		return config
 	}
 }
 
 func WithCtx(ctx context.Context) Opt {
-	return func(config DockerConfig) DockerConfig {
+	return func(config Config) Config {
 		config.Ctx = ctx
 		return config
 	}
 }
 
+func WithAPIVersion(version string) Opt {
+	return func(config Config) Config {
+		config.usingAPIVersion = true
+		config.ClientOpts = append(config.ClientOpts, client.WithVersion(version))
+		return config
+	}
+}
+
 func WithCwd(cwd string) Opt {
-	return func(config DockerConfig) DockerConfig {
+	return func(config Config) Config {
 		config.Cwd = cwd
 		return config
 	}
 }
 
-func Exec(runners ...func(config DockerConfig) (err error)) Opt {
-	return func(config DockerConfig) DockerConfig {
+func Exec(runners ...func(config Config) (err error)) Opt {
+	return func(config Config) Config {
 		config.execRunners = append(config.execRunners, runners...)
 		return config
 	}
 }
 
-func After(runners ...func(config DockerConfig) (err error)) Opt {
-	return func(config DockerConfig) DockerConfig {
+func After(runners ...func(config Config) (err error)) Opt {
+	return func(config Config) Config {
 		config.afterRunners = append(config.afterRunners, runners...)
 		return config
 	}
 }
 
 func WithDockerfile(path string) Opt {
-	return func(config DockerConfig) DockerConfig {
+	return func(config Config) Config {
 		if config.ImageBuildOpts == nil {
 			config.ImageBuildOpts = &types.ImageBuildOptions{}
 		}
@@ -86,7 +98,7 @@ func WithDockerfile(path string) Opt {
 }
 
 func WithImage(image string) Opt {
-	return func(config DockerConfig) DockerConfig {
+	return func(config Config) Config {
 		if config.Container == nil {
 			config.ContainerConfig = &container.Config{}
 		}
@@ -95,15 +107,15 @@ func WithImage(image string) Opt {
 	}
 }
 
-func WithConfig(config DockerConfig) Opt {
-	return func(_ DockerConfig) DockerConfig {
+func WithConfig(config Config) Opt {
+	return func(_ Config) Config {
 		return config
 	}
 }
 
 func CleanupContainer() Opt {
-	return func(config DockerConfig) DockerConfig {
-		config.afterRunners = append(config.afterRunners, func(config DockerConfig) (err error) {
+	return func(config Config) Config {
+		config.afterRunners = append(config.afterRunners, func(config Config) (err error) {
 			fmt.Println("removing container")
 			if err = config.Cli.ContainerRemove(config.Ctx, config.Container.ID, types.ContainerRemoveOptions{RemoveVolumes: true}); err != nil {
 				return
@@ -115,8 +127,8 @@ func CleanupContainer() Opt {
 }
 
 func CleanupImage() Opt {
-	return func(config DockerConfig) DockerConfig {
-		config.afterRunners = append(config.afterRunners, func(config DockerConfig) (err error) {
+	return func(config Config) Config {
+		config.afterRunners = append(config.afterRunners, func(config Config) (err error) {
 			opts := types.ImageListOptions{
 				Filters: filters.NewArgs(),
 			}
@@ -145,7 +157,7 @@ func CleanupImage() Opt {
 	}
 }
 
-func loadContext(config DockerConfig) (context io.Reader, err error) {
+func loadContext(config Config) (context io.Reader, err error) {
 	context = NewTarDirReader(config.Cwd)
 	return
 }
@@ -190,14 +202,18 @@ func consumeDockerStream(reader io.ReadCloser, lines chan<- streamLine) (err err
 	return
 }
 
-func buildImage(config DockerConfig) (imageTag string, err error) {
-	fmt.Println("building image")
+func buildImage(config Config) (imageTag string, err error) {
 	if config.Cwd == "" {
 		config.Cwd, err = os.Getwd()
 		if err != nil {
 			return
 		}
 	}
+	config.Cwd, err = filepath.Abs(config.Cwd)
+	if err != nil {
+		return
+	}
+	fmt.Println("building image from", config.Cwd)
 	config.ImageBuildOpts.Tags = append(config.ImageBuildOpts.Tags, config.ImageBuildOpts.BuildID)
 	config.ImageBuildOpts.BuildID = strings.ToLower(zrand.AlphaWord(6))
 	imageTag = config.ImageBuildOpts.BuildID
@@ -241,7 +257,7 @@ func buildImage(config DockerConfig) (imageTag string, err error) {
 	return
 }
 
-func pullImage(config DockerConfig) (err error) {
+func pullImage(config Config) (err error) {
 	if config.ImagePullOpts == nil {
 		config.ImagePullOpts = &types.ImagePullOptions{}
 	}
@@ -259,7 +275,7 @@ func pullImage(config DockerConfig) (err error) {
 }
 
 func Run(opts ...Opt) (err error) {
-	var config DockerConfig
+	var config Config
 	for _, opt := range opts {
 		config = opt(config)
 	}
@@ -268,10 +284,23 @@ func Run(opts ...Opt) (err error) {
 		config.Ctx = context.Background()
 	}
 
+	if !config.usingAPIVersion {
+		config.ClientOpts = append(config.ClientOpts, client.WithAPIVersionNegotiation())
+	}
+
 	config.Cli, err = client.NewClientWithOpts(config.ClientOpts...)
 	if err != nil {
 		return
 	}
+	defer config.Cli.Close()
+
+	defer func() {
+		for _, after := range config.afterRunners {
+			if err = after(config); err != nil {
+				return
+			}
+		}
+	}()
 
 	if config.ImageBuildOpts != nil {
 		imageTag, err := buildImage(config)
@@ -295,16 +324,10 @@ func Run(opts ...Opt) (err error) {
 		return
 	}
 
-	for _, after := range config.afterRunners {
-		if err = after(config); err != nil {
-			return
-		}
-	}
-
 	return
 }
 
-func execContainer(config *DockerConfig) (err error) {
+func execContainer(config *Config) (err error) {
 	fmt.Println("creating container")
 	c, err := config.Cli.ContainerCreate(config.Ctx, config.ContainerConfig, config.Host, config.Network, config.Platform, config.Name)
 	if err != nil {

@@ -1,4 +1,4 @@
-package main
+package godocker
 
 import (
 	"testing"
@@ -13,7 +13,7 @@ func TestPullImage(t *testing.T) {
 		WithClientOpts(client.WithAPIVersionNegotiation()),
 		CleanupContainer(),
 		CleanupImage(),
-		Exec(func(config DockerConfig) (err error) {
+		Exec(func(config Config) (err error) {
 			executed = true
 			return
 		}),
@@ -33,7 +33,7 @@ func TestBuildImage(t *testing.T) {
 		WithClientOpts(client.WithAPIVersionNegotiation()),
 		CleanupContainer(),
 		CleanupImage(),
-		Exec(func(config DockerConfig) (err error) {
+		Exec(func(config Config) (err error) {
 			executed = true
 			return
 		}),

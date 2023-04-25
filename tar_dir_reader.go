@@ -1,4 +1,4 @@
-package main
+package godocker
 
 import (
 	"archive/tar"
@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 )
 
 // Convert a directory into a readable tar stream
@@ -17,7 +18,7 @@ func NewTarDirReader(dir string) *tarDirReader {
 
 type tarDirReader struct {
 	fs          fs.FS
-	queue       []fs.DirEntry
+	queue       []string
 	reader      *io.PipeReader
 	writer      *io.PipeWriter
 	archive     *tar.Writer
@@ -36,7 +37,9 @@ func (t *tarDirReader) init() (err error) {
 			return err
 		}
 		// TODO: some kind of filtering using .ignore files
-		t.queue = append(t.queue, d)
+		if !d.IsDir() {
+			t.queue = append(t.queue, path)
+		}
 		return nil
 	})
 	if err != nil {
@@ -46,8 +49,8 @@ func (t *tarDirReader) init() (err error) {
 	return
 }
 
-func (t *tarDirReader) writeFile(f fs.DirEntry) (err error) {
-	file, err := t.fs.Open(f.Name())
+func (t *tarDirReader) writeFile(f string) (err error) {
+	file, err := t.fs.Open(f)
 	if err != nil {
 		return
 	}
@@ -60,7 +63,7 @@ func (t *tarDirReader) writeFile(f fs.DirEntry) (err error) {
 	if err != nil {
 		return err
 	}
-	header.Name = f.Name()
+	header.Name = filepath.Base(f)
 	if err = t.archive.WriteHeader(header); err != nil {
 		return
 	}
@@ -72,10 +75,7 @@ func (t *tarDirReader) writeFile(f fs.DirEntry) (err error) {
 
 func (t *tarDirReader) writeQueue() {
 	for _, f := range t.queue {
-		if f.IsDir() {
-			continue
-		}
-		fmt.Println("writing file to tar", f.Name())
+		fmt.Println("writing file to tar", f)
 		if err := t.writeFile(f); err != nil {
 			panic(err)
 		}
